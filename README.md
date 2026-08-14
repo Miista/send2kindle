@@ -69,10 +69,9 @@ services:
 ## Building
 
 ```sh
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o send2kindle-linux-amd64 .
 docker build -t send2kindle:latest .
 ```
 
 The image is built `FROM scratch` — just the static binary and a CA
 certificate bundle for verifying the SMTP server's TLS certificate. No shell,
-no package manager, ~4.4 MB.
+no package manager: ~2 MB compressed, ~7 MB unpacked.
