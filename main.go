@@ -128,6 +128,20 @@ func handleFile(path string) {
 		return
 	}
 
+	// Gmail's outbound SMTP limit is 25MB, and base64 encoding inflates the
+	// attachment by ~37% — so the real ceiling on the source file is lower
+	// than 25MB. Without this check, an oversized file fails send() the same
+	// way every retry forever (SMTP server aborts mid-transfer), silently
+	// piling up. Leave the file in place — it needs a human decision
+	// (different delivery method, or it doesn't belong in this pipeline at
+	// all), not an automatic delete.
+	const maxSourceBytes = 18 * 1024 * 1024
+	if info.Size() > maxSourceBytes {
+		slog.Error("file too large for Gmail SMTP, leaving in place — needs manual handling",
+			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSourceBytes)
+		return
+	}
+
 	if err := send(path); err != nil {
 		slog.Error("send failed, leaving file in place for manual retry", "path", path, "error", err)
 		return
