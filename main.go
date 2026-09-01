@@ -77,6 +77,12 @@ func parseMode(raw string) (Mode, error) {
 // that a book requested now arrives while you still want it.
 const defaultInterval = time.Minute
 
+// megabytes renders a size the way the person reading the notification thinks
+// about it. Bytes are the right unit for a log and the wrong one for a phone.
+func megabytes(n int64) string {
+	return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+}
+
 // parseInterval reads SCAN_INTERVAL as a Go duration ("30s", "5m").
 //
 // A floor rather than an exact value: a one-second scan of a real library is
@@ -144,6 +150,11 @@ func main() {
 		state = LoadState(statePath)
 		slog.Info("library mode: files are left in place, outcomes recorded",
 			"state", statePath, "known", len(state.Entries))
+	}
+
+	notifier = notifierFromEnv()
+	if notifier.Configured() {
+		slog.Info("notifications enabled", "topic", notifier.Topic)
 	}
 
 	interval, err := parseInterval(os.Getenv("SCAN_INTERVAL"))
@@ -242,9 +253,17 @@ func handle(path string, m Mode, st *State) {
 		// NEVER in library mode -- the shelf is not ours to delete from, and a
 		// format Amazon will not take is still a book someone owns.
 		if m == ModeDrop {
+			// Worth a notification because it DESTROYS the file: a book in a
+			// format Amazon will not take was still a book, and the only
+			// record that it existed is this message.
 			slog.Info("discarding file Amazon's Send-to-Kindle email won't accept", "path", path, "ext", ext)
 			os.Remove(path)
+			notifier.Notify("Discarded "+name,
+				fmt.Sprintf("%s was deleted: Amazon's Send-to-Kindle email does not accept %s files.", name, ext),
+				priorityHigh)
 		} else {
+			// Library mode kept the file, so nothing was lost and there is
+			// nothing to act on.
 			slog.Info("skipping file Amazon's Send-to-Kindle email won't accept", "path", path, "ext", ext)
 		}
 		finish(OutcomeUnusable)
@@ -254,6 +273,10 @@ func handle(path string, m Mode, st *State) {
 	if info.Size() > maxSourceBytes {
 		slog.Error("file too large for Gmail SMTP, leaving in place — needs manual handling",
 			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSourceBytes)
+		notifier.Notify("Too large: "+name,
+			fmt.Sprintf("%s is %s, over the %s limit. It needs a different delivery method — USB, or a smaller edition.",
+				name, megabytes(info.Size()), megabytes(maxSourceBytes)),
+			priorityHigh)
 		finish(OutcomeTooLarge)
 		return
 	}
@@ -264,6 +287,12 @@ func handle(path string, m Mode, st *State) {
 		// being wrong is a duplicate on the Kindle; the cost of recording it
 		// would be a book that never arrives and never says so.
 		slog.Error("send failed, leaving file in place for manual retry", "path", path, "error", err)
+		// Default priority, not high: this is retried on the next scan, so
+		// most of these resolve themselves and a high-priority alert for a
+		// transient SMTP blip would train you to ignore the channel.
+		notifier.Notify("Send failed: "+name,
+			fmt.Sprintf("%s could not be sent: %v\nIt stays in place and will be retried.", name, err),
+			priorityDefault)
 		return
 	}
 

@@ -112,3 +112,40 @@ volumes:
   - /path/to/library:/watch:ro
   - ./state:/state
 ```
+
+## Notifications
+
+`slog.Error` writes to stdout, and nobody reads stdout. That is the whole
+reason this exists: the size guard was correct for weeks while a 115MB epub
+failed on every restart, and eighteen days passed before anyone noticed,
+because the warning had nowhere to go.
+
+Set `NTFY_URL` and `NTFY_TOPIC` to publish; `NTFY_TOKEN` if the topic needs
+one. Unset, notifications are off and nothing else changes.
+
+What is announced, and what deliberately is not:
+
+| | Announced | Priority |
+| --- | --- | --- |
+| Too large to email | yes | high |
+| Discarded in drop mode | yes | high |
+| Send failed | yes | default |
+| Skipped in library mode | no | |
+| Sent successfully | no | |
+
+A successful send is visible on the Kindle, so announcing it would only make
+the channel noise -- and noise is why the original warnings went unread.
+A skipped file in library mode is still on the shelf, so there is nothing to
+act on. A *discarded* file in drop mode is gone, which is the one outcome no
+log can recover.
+
+Each is announced once, not on every scan: the state file records failures as
+well as successes, so an oversized book warns the first time and then stays
+quiet.
+
+```yaml
+environment:
+  NTFY_URL: https://ntfy.example.com
+  NTFY_TOPIC: books
+  SCAN_INTERVAL: 1m
+```

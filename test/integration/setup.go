@@ -28,6 +28,10 @@ const label = "io.github.miista.send2kindle.integration"
 // suite from the repository it lives in.
 const suiteImage = "send2kindle:integration"
 
+// receiverImage stands in for ntfy, for the scenarios that assert on what
+// send2kindle announced.
+const receiverImage = "send2kindle-receiver:integration"
+
 // smtpdImage stands in for Gmail: it accepts the SMTP conversation and spools
 // what it was sent, for the scenarios that assert on what actually went out.
 const smtpdImage = "send2kindle-smtpd:integration"
@@ -43,6 +47,9 @@ func Setup() (string, error) {
 	}
 	if err := buildSMTPD(root); err != nil {
 		return "", fmt.Errorf("building %s: %w", smtpdImage, err)
+	}
+	if err := buildHelper(root, "receiver", receiverImage); err != nil {
+		return "", fmt.Errorf("building %s: %w", receiverImage, err)
 	}
 	return root, nil
 }
@@ -82,17 +89,23 @@ func buildImage(root string) error {
 	return nil
 }
 
-// buildSMTPD builds the fake SMTP server from its own source, rather than a
-// heredoc: it is ordinary Go that compiles and vets with everything else.
+// buildSMTPD builds the fake SMTP server.
 func buildSMTPD(root string) error {
-	dir, err := os.MkdirTemp("", "send2kindle-smtpd")
+	return buildHelper(root, "smtpd", smtpdImage)
+}
+
+// buildHelper builds one of the suite's stand-in containers from its own
+// source, rather than a heredoc: they are ordinary Go that compiles and vets
+// with everything else.
+func buildHelper(root, name, image string) error {
+	dir, err := os.MkdirTemp("", "send2kindle-"+name)
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
 
 	build := exec.Command("go", "build", "-ldflags", "-s -w", "-o",
-		filepath.Join(dir, "smtpd"), "./test/integration/smtpd")
+		filepath.Join(dir, name), "./test/integration/"+name)
 	build.Dir = root
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -100,13 +113,13 @@ func buildSMTPD(root string) error {
 	}
 
 	// FROM scratch: nothing is pulled, so the suite works offline.
-	dockerfile := "FROM scratch\nCOPY smtpd /smtpd\nCMD [\"/smtpd\"]\n"
+	dockerfile := fmt.Sprintf("FROM scratch\nCOPY %s /%s\nCMD [\"/%s\"]\n", name, name, name)
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
 		return err
 	}
 
 	cmd := exec.Command("docker", "build", "-q",
-		"--label", label+"=integration", "-t", smtpdImage, dir)
+		"--label", label+"=integration", "-t", image, dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w\n%s", err, out)
 	}

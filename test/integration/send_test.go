@@ -216,3 +216,62 @@ func TestSkipsHiddenDirectories(t *testing.T) {
 		t.Errorf("the real book was not sent:\n%s", first(got[0]))
 	}
 }
+
+// --- notifications ---
+
+// The failure this whole thing exists for: a 115MB epub failed on every
+// restart for eighteen days and every warning went to stdout, where nobody
+// read it. The guard was correct; the reporting was not.
+func TestAnnouncesAnOversizedBook(t *testing.T) {
+	s := Up(t, "send/notify")
+	s.TrustSMTPD()
+	s.Drop("Rhythm of War.epub", 19*1024*1024)
+	s.Start()
+
+	line := s.WaitForNotification("Too large")
+
+	if !strings.Contains(line, "Rhythm of War.epub") {
+		t.Errorf("the notification did not name the book:\n%s", line)
+	}
+	if !strings.Contains(line, "priority=4") {
+		t.Errorf("a lost book was not sent at high priority:\n%s", line)
+	}
+	if !strings.Contains(line, "topic=/books") {
+		t.Errorf("the notification went to the wrong topic:\n%s", line)
+	}
+}
+
+// The counterpart: a book that sent correctly is visible on the Kindle, and
+// announcing it too would make the channel noise. Noise is why the real
+// warnings went unread.
+func TestDoesNotAnnounceASuccessfulSend(t *testing.T) {
+	s := Up(t, "send/notify")
+	s.TrustSMTPD()
+	s.Drop("Fine.epub", 1024)
+	s.Start()
+
+	s.WaitForDelivery(1)
+
+	if got := s.Notified(); len(got) != 0 {
+		t.Errorf("a successful send was announced: %v", got)
+	}
+}
+
+// Announced once, not on every scan. The tool polls, so without the state
+// file this would fire every interval forever -- which is the same failure as
+// the logs, just louder.
+func TestAnnouncesAProblemOnlyOnce(t *testing.T) {
+	s := Up(t, "send/notify")
+	s.TrustSMTPD()
+	s.Drop("Huge.epub", 19*1024*1024)
+	s.Start()
+	s.WaitForNotification("Too large")
+
+	// Long enough for several scans at the fixture's interval.
+	s.Restart(Subject)
+	s.WaitForLine(Subject, "watching for new ebooks")
+
+	if got := s.Notified(); len(got) != 1 {
+		t.Errorf("the same problem was announced %d times:\n%s", len(got), strings.Join(got, "\n"))
+	}
+}
