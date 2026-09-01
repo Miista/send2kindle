@@ -28,10 +28,6 @@ const label = "io.github.miista.send2kindle.integration"
 // suite from the repository it lives in.
 const suiteImage = "send2kindle:integration"
 
-// receiverImage stands in for ntfy, for the scenarios that assert on what
-// send2kindle announced.
-const receiverImage = "send2kindle-receiver:integration"
-
 // smtpdImage stands in for Gmail: it accepts the SMTP conversation and spools
 // what it was sent, for the scenarios that assert on what actually went out.
 const smtpdImage = "send2kindle-smtpd:integration"
@@ -47,9 +43,6 @@ func Setup() (string, error) {
 	}
 	if err := buildSMTPD(root); err != nil {
 		return "", fmt.Errorf("building %s: %w", smtpdImage, err)
-	}
-	if err := buildHelper(root, "receiver", receiverImage); err != nil {
-		return "", fmt.Errorf("building %s: %w", receiverImage, err)
 	}
 	return root, nil
 }
