@@ -20,6 +20,19 @@ import (
 
 const watchDir = "/watch"
 
+// Gmail's outbound SMTP limit is 25MB, and base64 encoding inflates the
+// attachment by ~37% — so the real ceiling on the source file is lower than
+// 25MB. Without this check, an oversized file fails send() the same way every
+// retry forever (SMTP server aborts mid-transfer), silently piling up. Leave
+// the file in place — it needs a human decision (different delivery method,
+// or it doesn't belong in this pipeline at all), not an automatic delete.
+const maxSourceBytes = 18 * 1024 * 1024
+
+// sendFile is a variable so tests can substitute a fake: the decision of
+// WHICH files to send is the interesting logic, and pinning it down should
+// not require an SMTP server.
+var sendFile = send
+
 // Formats Amazon's Send-to-Kindle email service accepts directly, converting
 // server-side. Amazon dropped native mobi/azw3 support for email delivery
 // around 2022 — anything else lands here unconvertible and gets discarded.
@@ -128,21 +141,13 @@ func handleFile(path string) {
 		return
 	}
 
-	// Gmail's outbound SMTP limit is 25MB, and base64 encoding inflates the
-	// attachment by ~37% — so the real ceiling on the source file is lower
-	// than 25MB. Without this check, an oversized file fails send() the same
-	// way every retry forever (SMTP server aborts mid-transfer), silently
-	// piling up. Leave the file in place — it needs a human decision
-	// (different delivery method, or it doesn't belong in this pipeline at
-	// all), not an automatic delete.
-	const maxSourceBytes = 18 * 1024 * 1024
 	if info.Size() > maxSourceBytes {
 		slog.Error("file too large for Gmail SMTP, leaving in place — needs manual handling",
 			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSourceBytes)
 		return
 	}
 
-	if err := send(path); err != nil {
+	if err := sendFile(path); err != nil {
 		slog.Error("send failed, leaving file in place for manual retry", "path", path, "error", err)
 		return
 	}
@@ -154,13 +159,24 @@ func handleFile(path string) {
 }
 
 func send(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read file: %w", err)
-	}
-
 	from := os.Getenv("FROM_EMAIL")
 	to := os.Getenv("KINDLE_EMAIL")
+
+	msg, err := buildMessage(path, from, to)
+	if err != nil {
+		return err
+	}
+
+	return deliver(msg, from, to)
+}
+
+// buildMessage assembles the MIME message with the book attached.
+func buildMessage(path, from, to string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+
 	filename := filepath.Base(path)
 
 	var buf bytes.Buffer
@@ -176,7 +192,7 @@ func send(path string) error {
 		"Content-Type": {"text/plain; charset=utf-8"},
 	})
 	if err != nil {
-		return fmt.Errorf("create body part: %w", err)
+		return nil, fmt.Errorf("create body part: %w", err)
 	}
 	bodyPart.Write([]byte("Sent by kindle-sender.\r\n"))
 
@@ -187,7 +203,7 @@ func send(path string) error {
 	}
 	attachPart, err := w.CreatePart(attachHeader)
 	if err != nil {
-		return fmt.Errorf("create attachment part: %w", err)
+		return nil, fmt.Errorf("create attachment part: %w", err)
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
 	for i := 0; i < len(encoded); i += 76 {
@@ -199,9 +215,14 @@ func send(path string) error {
 	}
 
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("close multipart writer: %w", err)
+		return nil, fmt.Errorf("close multipart writer: %w", err)
 	}
 
+	return buf.Bytes(), nil
+}
+
+// deliver opens the SMTP conversation and writes the message.
+func deliver(msg []byte, from, to string) error {
 	host := os.Getenv("SMTP_HOST")
 	port := os.Getenv("SMTP_PORT")
 	auth := smtp.PlainAuth("", os.Getenv("SMTP_USER"), os.Getenv("SMTP_PASS"), host)
@@ -210,6 +231,7 @@ func send(path string) error {
 	tlsConfig := &tls.Config{ServerName: host}
 
 	var client *smtp.Client
+	var err error
 	if port == "465" {
 		conn, dialErr := tls.Dial("tcp", addr, tlsConfig)
 		if dialErr != nil {
@@ -244,7 +266,7 @@ func send(path string) error {
 	if err != nil {
 		return fmt.Errorf("data: %w", err)
 	}
-	if _, err := wc.Write(buf.Bytes()); err != nil {
+	if _, err := wc.Write(msg); err != nil {
 		return fmt.Errorf("write message: %w", err)
 	}
 	if err := wc.Close(); err != nil {
