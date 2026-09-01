@@ -108,7 +108,7 @@ func Up(t T, name string) *Scenario {
 	// yet fails the container with "not a directory" -- the trust store has to
 	// be a file before compose resolves the mount, even though its contents
 	// are not known until smtpd has generated a certificate.
-	for _, dir := range []string{"watch", "spool", "certs"} {
+	for _, dir := range []string{"watch", "spool", "certs", "state"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, dir), 0o777); err != nil {
 			t.Fatalf("preparing %s: %v", dir, err)
 		}

@@ -141,3 +141,42 @@ func first(msg string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// --- library mode ---
+
+// The contract library mode exists for: the book is sent and STAYS. A drop
+// folder is a queue, a library is a shelf, and emailing something is not a
+// reason to take it off the shelf.
+func TestLibraryModeSendsWithoutRemoving(t *testing.T) {
+	s := Up(t, "send/library")
+	s.TrustSMTPD()
+	s.Drop("Kept.epub", 1024)
+	s.Start()
+
+	got := s.WaitForDelivery(1)
+
+	if !strings.Contains(got[0], "Subject: Kept.epub") {
+		t.Errorf("the wrong book was sent:\n%s", first(got[0]))
+	}
+	if !s.Dropped("Kept.epub") {
+		t.Error("library mode removed the book from the shelf")
+	}
+}
+
+// And the reason the state file has to exist: without it the startup sweep
+// would re-send the whole shelf on every restart, because nothing was removed
+// to say otherwise.
+func TestLibraryModeDoesNotResendAfterARestart(t *testing.T) {
+	s := Up(t, "send/library")
+	s.TrustSMTPD()
+	s.Drop("Once.epub", 1024)
+	s.Start()
+	s.WaitForDelivery(1)
+
+	s.Restart(Subject)
+	s.WaitForLine(Subject, "watching for new ebooks")
+
+	if got := s.Delivered(); len(got) != 1 {
+		t.Errorf("the shelf was re-sent on restart: %d message(s), expected 1", len(got))
+	}
+}

@@ -192,3 +192,143 @@ func TestBuildsAMessageWithTheFileAttached(t *testing.T) {
 		}
 	}
 }
+
+// --- library mode ---
+//
+// The difference that matters: drop mode consumes what it sends, library mode
+// leaves it and remembers. These assert both halves, because a mode that sent
+// correctly but deleted the book would pass any test that only checked
+// delivery.
+
+// newState is an in-memory state backed by a temp file.
+func newState(t *testing.T) *State {
+	t.Helper()
+	return LoadState(filepath.Join(t.TempDir(), "sent.json"))
+}
+
+func TestLibraryModeKeepsTheFile(t *testing.T) {
+	withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeLibrary, st)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Error("library mode removed the book from the shelf")
+	}
+}
+
+func TestLibraryModeRecordsWhatItSent(t *testing.T) {
+	sent := withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeLibrary, st)
+
+	if len(*sent) != 1 {
+		t.Fatalf("the book was not sent: %v", *sent)
+	}
+	key, _ := keyOf(path)
+	if !st.Done(key) {
+		t.Error("the send was not recorded")
+	}
+}
+
+// The point of recording: a second pass must not send it again. Without this,
+// every restart re-sends the whole shelf.
+func TestLibraryModeDoesNotSendTwice(t *testing.T) {
+	sent := withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeLibrary, st)
+	handle(path, ModeLibrary, st)
+
+	if len(*sent) != 1 {
+		t.Errorf("the book was sent %d times, expected once", len(*sent))
+	}
+}
+
+// A failure is a decision too: the oversized warning must fire once, not on
+// every restart. This is the bug that logged the same error for eighteen days.
+func TestLibraryModeWarnsAboutAnOversizedBookOnlyOnce(t *testing.T) {
+	withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "huge.epub", maxSourceBytes+1)
+
+	handle(path, ModeLibrary, st)
+	key, _ := keyOf(path)
+	if !st.Done(key) {
+		t.Fatal("the oversized outcome was not recorded")
+	}
+	if got := st.Entries[key].Outcome; got != OutcomeTooLarge {
+		t.Errorf("recorded outcome was %q, expected %q", got, OutcomeTooLarge)
+	}
+}
+
+// A send that failed is NOT terminal: the server may have been briefly
+// unreachable, and a book that never arrives and never retries is worse than
+// a duplicate.
+func TestLibraryModeRetriesAfterAFailedSend(t *testing.T) {
+	sent := withFakeSend(t, errSendFailed)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeLibrary, st)
+	key, _ := keyOf(path)
+	if st.Done(key) {
+		t.Error("a failed send was recorded as a final outcome")
+	}
+
+	handle(path, ModeLibrary, st)
+	if len(*sent) != 2 {
+		t.Errorf("a failed send was not retried: %d attempt(s)", len(*sent))
+	}
+}
+
+// Library mode must never delete, even for a format Amazon will not take.
+// Drop mode discards those -- the file was a copy made to be consumed -- but
+// a shelf is not ours to delete from.
+func TestLibraryModeKeepsAnUnacceptedFormat(t *testing.T) {
+	sent := withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "comic.cbz", 1024)
+
+	handle(path, ModeLibrary, st)
+
+	if len(*sent) != 0 {
+		t.Errorf("an unaccepted format was sent: %v", *sent)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Error("library mode deleted a file Amazon cannot take; it is still the owner's book")
+	}
+}
+
+// Drop mode is unchanged by any of this: it still consumes what it sends, and
+// still does not need a state file.
+func TestDropModeStillRemovesTheFile(t *testing.T) {
+	withFakeSend(t, nil)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeDrop, newState(t))
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("drop mode left the file behind")
+	}
+}
+
+// And drop mode does not consult the state file: a file it has seen before is
+// gone, so there is nothing to suppress.
+func TestDropModeIgnoresTheState(t *testing.T) {
+	sent := withFakeSend(t, nil)
+	st := newState(t)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+	key, _ := keyOf(path)
+	st.Record(key, OutcomeSent, "book.epub", 1024)
+
+	handle(path, ModeDrop, st)
+
+	if len(*sent) != 1 {
+		t.Error("drop mode skipped a file because of a state entry")
+	}
+}

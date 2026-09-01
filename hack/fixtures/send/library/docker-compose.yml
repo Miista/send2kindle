@@ -1,0 +1,46 @@
+# Library mode: the watch directory is a shelf, mounted READ-ONLY because the
+# tool is a reader of it rather than its owner. What has been sent is recorded
+# under /state instead of being implied by the file's absence.
+#
+# The rest is the basic fixture: the tool, and something on the other end of
+# the SMTP conversation.
+#
+# smtpd stands in for Gmail. It listens on 465 and does implicit TLS, because
+# that is a path send2kindle takes without STARTTLS negotiation -- and Go's
+# PlainAuth refuses to send credentials over a plaintext connection, so there
+# is no simpler shape available.
+services:
+  smtpd:
+    image: send2kindle-smtpd:integration
+    labels:
+      io.github.miista.send2kindle.integration: fixture
+    volumes:
+      - ./spool:/spool
+    healthcheck:
+      test: ["CMD", "/smtpd", "-healthcheck"]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+
+  send2kindle:
+    image: send2kindle:integration
+    labels:
+      io.github.miista.send2kindle.integration: fixture
+    depends_on:
+      smtpd:
+        condition: service_healthy
+    environment:
+      WATCH_MODE: library
+      SMTP_HOST: smtpd
+      SMTP_PORT: "465"
+      SMTP_USER: test
+      SMTP_PASS: test
+      FROM_EMAIL: from@example.com
+      KINDLE_EMAIL: to@kindle.com
+    volumes:
+      - ./watch:/watch:ro
+      - ./state:/state
+      - ./spool:/spool:ro
+      # smtpd generates its certificate at startup and writes it to the spool;
+      # TrustSMTPD copies it here before send2kindle is started.
+      - ./certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro

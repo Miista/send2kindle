@@ -75,3 +75,40 @@ docker build -t send2kindle:latest .
 The image is built `FROM scratch` — just the static binary and a CA
 certificate bundle for verifying the SMTP server's TLS certificate. No shell,
 no package manager: ~2 MB compressed, ~7 MB unpacked.
+
+## Modes
+
+`WATCH_MODE` selects how the watched directory is treated. The two are not
+variations on a setting -- they are different contracts about who owns the
+files.
+
+| | `drop` (default) | `library` |
+| --- | --- | --- |
+| The directory is | a queue | a shelf |
+| After a successful send | the file is removed | the file stays |
+| Repeats prevented by | the file being gone | `/state/sent.json` |
+| Unsendable formats | discarded | left alone |
+| Mount it | read-write | read-only |
+
+Drop mode is what send2kindle was built for: a frontend that could not
+hardlink made a copy specifically to be consumed, so consuming it was correct.
+
+Library mode watches a directory the tool does not own -- one filled by
+Shelfarr, bindery, Readarr or anything else -- and records what it has sent
+instead of deleting it. Outcomes are keyed by inode and size rather than path,
+so a book renamed by a metadata refresh is still the same book, and two
+hardlinks to one inode are one book.
+
+Failures are recorded too. An oversized file warns once rather than on every
+restart, which is how a 115MB epub logged the same error for eighteen days
+without anyone seeing it. A *failed send* is deliberately not recorded: the
+server may have been briefly unreachable, and a duplicate on the Kindle is a
+better outcome than a book that silently never arrives.
+
+```yaml
+environment:
+  WATCH_MODE: library
+volumes:
+  - /path/to/library:/watch:ro
+  - ./state:/state
+```

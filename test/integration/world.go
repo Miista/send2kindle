@@ -123,3 +123,13 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// Restart stops and starts a service, which is how the "does it re-send the
+// shelf?" question is asked: a restart is the moment the startup sweep runs
+// against a library that is still full.
+func (s *Scenario) Restart(service string) {
+	s.t.Helper()
+	if out, err := s.compose("restart", "-t", "2", service); err != nil {
+		s.t.Fatalf("restarting %s: %v\n%s", service, err, out)
+	}
+}
