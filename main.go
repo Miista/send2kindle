@@ -16,8 +16,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 const watchDir = "/watch"
@@ -74,6 +72,32 @@ func parseMode(raw string) (Mode, error) {
 	}
 }
 
+// defaultInterval is how often the tree is walked when SCAN_INTERVAL is
+// unset. Long enough that a large library costs nothing to poll, short enough
+// that a book requested now arrives while you still want it.
+const defaultInterval = time.Minute
+
+// parseInterval reads SCAN_INTERVAL as a Go duration ("30s", "5m").
+//
+// A floor rather than an exact value: a one-second scan of a real library is
+// a stat storm that finds nothing, and someone reaching for it has usually
+// misunderstood what the setting does. Refused rather than silently raised,
+// so the misunderstanding surfaces.
+func parseInterval(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultInterval, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("SCAN_INTERVAL must be a duration like 30s or 5m: %w", err)
+	}
+	if d < 5*time.Second {
+		return 0, fmt.Errorf("SCAN_INTERVAL must be at least 5s, got %s", d)
+	}
+	return d, nil
+}
+
 // sendFile is a variable so tests can substitute a fake: the decision of
 // WHICH files to send is the interesting logic, and pinning it down should
 // not require an SMTP server.
@@ -122,34 +146,14 @@ func main() {
 			"state", statePath, "known", len(state.Entries))
 	}
 
-	watcher, err := fsnotify.NewWatcher()
+	interval, err := parseInterval(os.Getenv("SCAN_INTERVAL"))
 	if err != nil {
-		slog.Error("create watcher", "error", err)
-		os.Exit(1)
-	}
-	defer watcher.Close()
-
-	if err := watcher.Add(watchDir); err != nil {
-		slog.Error("watch directory", "dir", watchDir, "error", err)
+		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("watching for new ebooks", "dir", watchDir, "mode", string(mode))
-
-	// fsnotify only reports events after the watch starts — sweep for files
-	// already sitting in the folder (e.g. from before this container existed).
-	entries, err := os.ReadDir(watchDir)
-	if err != nil {
-		slog.Error("read watch directory", "dir", watchDir, "error", err)
-		os.Exit(1)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		slog.Info("found existing file on startup", "path", entry.Name())
-		handleFile(filepath.Join(watchDir, entry.Name()))
-	}
+	slog.Info("watching for new ebooks", "dir", watchDir,
+		"mode", string(mode), "interval", interval.String())
 
 	// Docker stops a container by sending SIGTERM and waiting. Without this
 	// the process is killed instead, and anything that runs on the way out
@@ -158,39 +162,33 @@ func main() {
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 
-	// Debounce: a file write emits multiple fsnotify events as data lands.
-	// Wait for the path to go quiet before touching it.
-	pending := map[string]*time.Timer{}
-	const quietPeriod = 5 * time.Second
+	// Polled rather than watched. fsnotify does not recurse, so a library
+	// would need a watch per directory, a new watch whenever the frontend
+	// creates an author folder, and a rescan anyway to close the race where a
+	// book lands before that watch is registered -- and inotify has a
+	// per-user limit a large shelf can exhaust. A walk costs a stat per file
+	// and the state file already makes repeating one free.
+	//
+	// The first scan happens immediately: a book dropped while the container
+	// was down should not wait for the first tick.
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
+	sweep()
 	for {
 		select {
 		case sig := <-stopping:
 			slog.Info("shutting down", "signal", sig.String())
 			return
-
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			if event.Op&(fsnotify.Create|fsnotify.Write) == 0 {
-				continue
-			}
-			path := event.Name
-			if t, exists := pending[path]; exists {
-				t.Stop()
-			}
-			pending[path] = time.AfterFunc(quietPeriod, func() {
-				delete(pending, path)
-				handleFile(path)
-			})
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			slog.Error("watcher error", "error", err)
+		case <-ticker.C:
+			sweep()
 		}
 	}
+}
+
+// sweep walks the tree once and handles everything in it.
+func sweep() {
+	scan(watchDir, handleFile)
 }
 
 func handleFile(path string) {

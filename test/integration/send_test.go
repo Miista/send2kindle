@@ -180,3 +180,39 @@ func TestLibraryModeDoesNotResendAfterARestart(t *testing.T) {
 		t.Errorf("the shelf was re-sent on restart: %d message(s), expected 1", len(got))
 	}
 }
+
+// A library is nested: Shelfarr writes Author/Title/book.epub. The tool used
+// to read one directory, so a real shelf was invisible to it -- every file
+// sat there and nothing was ever sent.
+func TestFindsABookInASubdirectory(t *testing.T) {
+	s := Up(t, "send/library")
+	s.TrustSMTPD()
+	s.Drop("Adrian Tchaikovsky/Service Model/Service Model.epub", 1024)
+	s.Start()
+
+	got := s.WaitForDelivery(1)
+
+	if !strings.Contains(got[0], "Subject: Service Model.epub") {
+		t.Errorf("the nested book was not the one sent:\n%s", first(got[0]))
+	}
+}
+
+// Staging directories are not shelves. Shelfarr keeps partial downloads in
+// .shelfarr-staging-v2, and emailing a half-written file would be worse than
+// missing it.
+func TestSkipsHiddenDirectories(t *testing.T) {
+	s := Up(t, "send/library")
+	s.TrustSMTPD()
+	s.Drop(".shelfarr-staging-v2/partial.epub", 1024)
+	s.Drop("Author/Real.epub", 1024)
+	s.Start()
+
+	got := s.WaitForDelivery(1)
+
+	if strings.Contains(strings.Join(got, "\n"), "partial.epub") {
+		t.Error("a file from a staging directory was sent")
+	}
+	if !strings.Contains(got[0], "Subject: Real.epub") {
+		t.Errorf("the real book was not sent:\n%s", first(got[0]))
+	}
+}

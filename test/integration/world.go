@@ -20,7 +20,10 @@ import (
 func (s *Scenario) Drop(name string, size int) string {
 	s.t.Helper()
 
-	dir := filepath.Join(s.Dir, "watch")
+	// name may carry a path: "Author/Title/book.epub" is what a library looks
+	// like, and the nested case is the one recursion exists for.
+	dir := filepath.Join(s.Dir, "watch", filepath.Dir(name))
+	name = filepath.Base(name)
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		s.t.Fatalf("preparing the watch directory: %v", err)
 	}
@@ -36,13 +39,14 @@ func (s *Scenario) Drop(name string, size int) string {
 	return final
 }
 
-// Dropped reports whether a file is still in the watch directory.
+// Dropped reports whether a file is still in the watch directory. The name
+// may carry a path, matching Drop.
 //
 // The question every scenario asks after an outcome: a sent book is removed,
 // and one that could not be sent must still be there.
 func (s *Scenario) Dropped(name string) bool {
 	s.t.Helper()
-	_, err := os.Stat(filepath.Join(s.Dir, "watch", name))
+	_, err := os.Stat(filepath.Join(s.Dir, "watch", filepath.FromSlash(name)))
 	return err == nil
 }
 
