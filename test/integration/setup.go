@@ -65,8 +65,16 @@ func Teardown(root string) {
 // shipped image is FROM scratch and runs as 1000:1000, and a test image built
 // any other way would not show a file the tool cannot read.
 func buildImage(root string) error {
-	cmd := exec.Command("docker", "build", "-q",
-		"--label", label+"=integration", "-t", suiteImage, ".")
+	args := []string{"build", "-q", "--label", label + "=integration", "-t", suiteImage}
+	// GOCOVERDIR set means the run wants coverage from the container itself:
+	// main, send and deliver are the process boundary, and a unit test cannot
+	// reach them without mocking net/smtp -- which tests the mock.
+	if os.Getenv("GOCOVERDIR") != "" {
+		args = append(args, "--build-arg", "COVER=1")
+	}
+	args = append(args, ".")
+
+	cmd := exec.Command("docker", args...)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w\n%s", err, out)

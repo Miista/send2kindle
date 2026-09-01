@@ -26,6 +26,9 @@ services:
       smtpd:
         condition: service_healthy
     environment:
+      # Empty unless the run wants coverage from the container; an
+      # instrumented binary with no GOCOVERDIR behaves like an ordinary one.
+      GOCOVERDIR: ${GOCOVERDIR_IN_CONTAINER:-}
       SMTP_HOST: smtpd
       SMTP_PORT: "465"
       SMTP_USER: test
@@ -34,6 +37,7 @@ services:
       KINDLE_EMAIL: to@kindle.com
     volumes:
       - ./watch:/watch
+      - ./covdata:/covdata
       - ./spool:/spool:ro
       # smtpd generates its certificate at startup and writes it to the spool;
       # TrustSMTPD copies it here before send2kindle is started.

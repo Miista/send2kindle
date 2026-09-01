@@ -95,7 +95,10 @@ func Up(t T, name string) *Scenario {
 	// to bring the project down, so deleting the directory first would strand
 	// the containers.
 	s.sweep()
-	t.Cleanup(s.sweep)
+	t.Cleanup(func() {
+		s.collectCoverage()
+		s.sweep()
+	})
 
 	src := filepath.Join(root, "hack", "fixtures", suite, scenarioName)
 	if _, err := os.Stat(src); err != nil {
@@ -108,7 +111,7 @@ func Up(t T, name string) *Scenario {
 	// yet fails the container with "not a directory" -- the trust store has to
 	// be a file before compose resolves the mount, even though its contents
 	// are not known until smtpd has generated a certificate.
-	for _, dir := range []string{"watch", "spool", "certs", "state"} {
+	for _, dir := range []string{"watch", "spool", "certs", "state", "covdata"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, dir), 0o777); err != nil {
 			t.Fatalf("preparing %s: %v", dir, err)
 		}
@@ -196,6 +199,39 @@ func (s *Scenario) sweep() {
 	_ = os.RemoveAll(s.Dir)
 }
 
+// collectCoverage moves what the instrumented binary wrote into the directory
+// the run asked for.
+//
+// The subject is stopped first: Go writes the profile when the process exits,
+// so a container still running has written nothing. Sweep would delete the
+// testbed either way, which is why this happens before it rather than after.
+func (s *Scenario) collectCoverage() {
+	dest := os.Getenv("GOCOVERDIR")
+	if dest == "" {
+		return
+	}
+	_, _ = s.compose("stop", "-t", "5", Subject)
+
+	src := filepath.Join(s.Dir, "covdata")
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			continue
+		}
+		// The name is kept exactly as Go wrote it: `go tool covdata` finds
+		// input by matching covmeta.<hash> and covcounters.<hash>.<pid>.<n>,
+		// so a prefix -- however useful for telling scenarios apart -- makes
+		// the whole directory invisible to it. Collisions are not a risk the
+		// prefix was needed for: the hash identifies the binary and the
+		// counter files carry a timestamp.
+		_ = os.WriteFile(filepath.Join(dest, e.Name()), b, 0o644)
+	}
+}
+
 func (s *Scenario) copyTree(src, dst string) {
 	s.t.Helper()
 	if out, err := exec.Command("cp", "-R", src+"/.", dst).CombinedOutput(); err != nil {
@@ -226,9 +262,21 @@ func (s *Scenario) docker(args ...string) string {
 }
 
 // compose runs a compose command in this scenario's project.
+// composeEnv passes GOCOVERDIR through to the container as a path INSIDE it,
+// which is a different path from the one on the host -- the host directory is
+// bind-mounted at /covdata, and the binary writes to where it can see.
+func composeEnv() []string {
+	env := os.Environ()
+	if os.Getenv("GOCOVERDIR") != "" {
+		env = append(env, "GOCOVERDIR_IN_CONTAINER=/covdata")
+	}
+	return env
+}
+
 func (s *Scenario) compose(args ...string) (string, error) {
 	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
 	cmd.Dir = s.Dir
+	cmd.Env = composeEnv()
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

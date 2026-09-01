@@ -11,8 +11,10 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -149,6 +151,13 @@ func main() {
 		handleFile(filepath.Join(watchDir, entry.Name()))
 	}
 
+	// Docker stops a container by sending SIGTERM and waiting. Without this
+	// the process is killed instead, and anything that runs on the way out
+	// does not: a mid-flight send is cut off, and a coverage-instrumented
+	// build writes no counters. Returning from main is what lets both finish.
+	stopping := make(chan os.Signal, 1)
+	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
+
 	// Debounce: a file write emits multiple fsnotify events as data lands.
 	// Wait for the path to go quiet before touching it.
 	pending := map[string]*time.Timer{}
@@ -156,6 +165,10 @@ func main() {
 
 	for {
 		select {
+		case sig := <-stopping:
+			slog.Info("shutting down", "signal", sig.String())
+			return
+
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return
