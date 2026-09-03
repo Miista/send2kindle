@@ -291,7 +291,12 @@ func handle(path string, m Mode, st *State) {
 		} else {
 			// Library mode kept the file, so nothing was lost and there is
 			// nothing to act on.
-			slog.Info("skipping file Amazon's Send-to-Kindle email won't accept", "path", path, "ext", ext)
+			//
+			// Deliberately not phrased as "Amazon won't accept": Amazon takes
+			// .txt and .jpg happily, and it is THIS mode declining them. The
+			// blamed party has to be the one that made the decision, or the
+			// next person to read this log debugs the wrong system.
+			slog.Info("skipping file: library mode sends .epub only", "path", path, "ext", ext)
 		}
 		finish(OutcomeUnusable)
 		return
