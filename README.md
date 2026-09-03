@@ -52,7 +52,7 @@ mount and the setting can't drift out of sync.
 ```yaml
 services:
   send2kindle:
-    image: registry.guldmund.dk/send2kindle:latest
+    image: ghcr.io/miista/send2kindle:latest
     restart: unless-stopped
     user: "1000:1000"
     environment:
