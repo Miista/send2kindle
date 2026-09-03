@@ -29,6 +29,17 @@ import (
 // emailing it to a device, the sentence has to say which of those it was. A
 // bag of fields does not.
 func newLogger(levelStr string) zerolog.Logger {
+	// LOG_LEVEL is an override, not a required setting: unset means "use the
+	// default", which is Info. That has to be handled before ParseLevel rather than
+	// by the error branch below: ParseLevel("") returns NoLevel and a NIL
+	// ERROR, so the obvious `if err != nil` guard never fires and the logger
+	// is left at a level that discards every event. The process then runs
+	// perfectly with no output at all, which reads as "not started" rather
+	// than "misconfigured logger" and is why this cost an evening.
+	if strings.TrimSpace(levelStr) == "" {
+		levelStr = "info"
+	}
+
 	level, err := zerolog.ParseLevel(strings.ToLower(levelStr))
 	if err != nil {
 		level = zerolog.InfoLevel

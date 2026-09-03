@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -376,5 +377,43 @@ func TestDropModeStillSendsAnythingAmazonAccepts(t *testing.T) {
 		if len(*sent) != 1 {
 			t.Errorf("drop mode stopped sending a %s: %v", ext, *sent)
 		}
+	}
+}
+
+// zerolog.ParseLevel("") returns NoLevel and a NIL error, so the usual
+// `if err != nil { level = InfoLevel }` guard does not fire and the logger
+// silently discards every event. The service then runs perfectly and prints
+// nothing, which looks like it failed to start.
+//
+// LOG_LEVEL is an override, not a setting the app requires: unset means "use
+// the default", which is Info. Unset is therefore the ordinary case -- the
+// compose file does not set it -- not an edge case.
+func TestLoggerLogsWhenLevelUnset(t *testing.T) {
+	for _, level := range []string{"", "   ", "garbage"} {
+		var buf bytes.Buffer
+		log := newLogger(level).Output(&buf)
+
+		log.Info().Msg("hello")
+
+		if !strings.Contains(buf.String(), "hello") {
+			t.Errorf("LOG_LEVEL=%q discarded an Info event; got %q", level, buf.String())
+		}
+	}
+}
+
+// The counterpart: an explicit level must still be honoured, or the fix above
+// would "work" by ignoring LOG_LEVEL entirely.
+func TestLoggerHonoursExplicitLevel(t *testing.T) {
+	var buf bytes.Buffer
+	log := newLogger("error").Output(&buf)
+
+	log.Info().Msg("should not appear")
+	if buf.String() != "" {
+		t.Errorf("LOG_LEVEL=error let an Info event through: %q", buf.String())
+	}
+
+	log.Error().Msg("should appear")
+	if !strings.Contains(buf.String(), "should appear") {
+		t.Errorf("LOG_LEVEL=error discarded an Error event: %q", buf.String())
 	}
 }
