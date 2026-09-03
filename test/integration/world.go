@@ -27,11 +27,21 @@ func (s *Scenario) Drop(name string, size int) string {
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		s.t.Fatalf("preparing the watch directory: %v", err)
 	}
+	// Chmod after creating, because MkdirAll's mode is masked by the process
+	// umask -- 0o777 becomes 0o755 under the usual 022, and the shim runs as
+	// uid 1000 (the shipped image sets USER 1000:1000) which is not the uid
+	// that created it. Removing a file needs write permission on the
+	// DIRECTORY, so drop mode could send a book and then fail to consume it.
+	//
+	// Invisible on macOS, where Docker Desktop and Colima paper over ownership
+	// entirely; on a Linux CI runner it is "permission denied".
+	chmodTree(dir)
 
 	tmp := filepath.Join(dir, "."+name+".partial")
 	if err := os.WriteFile(tmp, make([]byte, size), 0o666); err != nil {
 		s.t.Fatalf("writing %s: %v", name, err)
 	}
+	_ = os.Chmod(tmp, 0o666)
 	final := filepath.Join(dir, name)
 	if err := os.Rename(tmp, final); err != nil {
 		s.t.Fatalf("renaming %s into place: %v", name, err)
@@ -171,4 +181,25 @@ func (s *Scenario) WaitForRecorded(name string) {
 			b, _ := os.ReadFile(filepath.Join(s.Dir, "state", "sent.json"))
 			return "state file:\n" + string(b) + "\n" + s.Logs(Subject)
 		})
+}
+
+// chmodTree makes a directory and everything under it writable by any uid.
+//
+// The suite's containers run as uid 1000 against bind mounts created by
+// whatever uid runs the tests -- 501 on this laptop, something else on a CI
+// runner. Rather than teach every fixture about ownership, the harness simply
+// opens up the directories it creates: they live in the testbed, which is
+// swept between scenarios.
+func chmodTree(root string) {
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			_ = os.Chmod(path, 0o777)
+		} else {
+			_ = os.Chmod(path, 0o666)
+		}
+		return nil
+	})
 }

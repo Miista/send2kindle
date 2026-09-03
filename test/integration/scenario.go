@@ -112,8 +112,15 @@ func Up(t T, name string) *Scenario {
 	// be a file before compose resolves the mount, even though its contents
 	// are not known until smtpd has generated a certificate.
 	for _, dir := range []string{"watch", "spool", "certs", "state", "covdata"} {
-		if err := os.MkdirAll(filepath.Join(s.Dir, dir), 0o777); err != nil {
+		path := filepath.Join(s.Dir, dir)
+		if err := os.MkdirAll(path, 0o777); err != nil {
 			t.Fatalf("preparing %s: %v", dir, err)
+		}
+		// MkdirAll's mode is masked by the umask, so 0o777 lands as 0o755 and
+		// the containers -- which run as uid 1000, not the uid running the
+		// tests -- cannot write to their own state and spool directories.
+		if err := os.Chmod(path, 0o777); err != nil {
+			t.Fatalf("opening up %s: %v", dir, err)
 		}
 	}
 	trust := filepath.Join(s.Dir, "certs", "ca-certificates.crt")
