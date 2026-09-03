@@ -27,9 +27,10 @@ func TestSendsADroppedBook(t *testing.T) {
 	if !strings.Contains(got[0], "X-Envelope-To: to@kindle.com") {
 		t.Errorf("the message did not go to the configured kindle address:\n%s", first(got[0]))
 	}
-	if s.Dropped("Service Model.epub") {
-		t.Error("the book was still in the watch directory after being sent")
-	}
+	// Waited for rather than asserted immediately: the shim removes the file
+	// after send() returns, which is a moment later than smtpd spooling the
+	// message that WaitForDelivery saw.
+	s.WaitForConsumed("Service Model.epub")
 }
 
 // The counterpart: a format Amazon will not accept must not reach the server.
@@ -162,6 +163,11 @@ func TestLibraryModeDoesNotResendAfterARestart(t *testing.T) {
 	s.Drop("Once.epub", 1024)
 	s.Start()
 	s.WaitForDelivery(1)
+	// The state file is written after the send returns. Restarting before
+	// that lands makes the startup sweep re-send a book that was already
+	// delivered -- which is the very thing this test is about, so racing it
+	// would fail for the wrong reason.
+	s.WaitForRecorded("Once.epub")
 
 	s.Restart(Subject)
 	s.WaitForLine(Subject, "watching for new ebooks")

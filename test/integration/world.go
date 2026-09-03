@@ -137,3 +137,38 @@ func (s *Scenario) Restart(service string) {
 		s.t.Fatalf("restarting %s: %v\n%s", service, err, out)
 	}
 }
+
+// WaitForConsumed blocks until a dropped file has been removed from the watch
+// directory.
+//
+// Separate from WaitForDelivery because they are different moments:
+// smtpd spools the message when it accepts it, and the shim removes the file
+// only after send() returns. A test that asserted on the file straight after
+// delivery raced that gap -- it passed locally and failed on a slower CI
+// runner, which is the worst version of a flake.
+func (s *Scenario) WaitForConsumed(name string) {
+	s.t.Helper()
+	s.waitFor("the shim to remove "+name+" after sending it", 60*time.Second,
+		func() bool { return !s.Dropped(name) },
+		func() string {
+			return "still in the watch directory\n" + s.Logs(Subject)
+		})
+}
+
+// WaitForRecorded blocks until the shim has written its state file.
+//
+// The same race in library mode: the outcome is recorded after the send
+// returns, so a restart between the two makes the startup sweep re-send a
+// book that was already delivered.
+func (s *Scenario) WaitForRecorded(name string) {
+	s.t.Helper()
+	s.waitFor("the shim to record "+name+" as handled", 60*time.Second,
+		func() bool {
+			b, err := os.ReadFile(filepath.Join(s.Dir, "state", "sent.json"))
+			return err == nil && strings.Contains(string(b), name)
+		},
+		func() string {
+			b, _ := os.ReadFile(filepath.Join(s.Dir, "state", "sent.json"))
+			return "state file:\n" + string(b) + "\n" + s.Logs(Subject)
+		})
+}
