@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,7 +11,7 @@ import (
 
 // Notifier publishes to ntfy.
 //
-// It exists because slog.Error writes to stdout and nobody reads stdout. The
+// It exists because an error line goes to stdout and nobody reads stdout. The
 // guards in handle were correct for weeks while a 115MB epub failed on every
 // restart, and the only reason that went unnoticed for eighteen days is that
 // the warning had nowhere to go.
@@ -58,7 +57,7 @@ func (n *Notifier) Notify(title, message string, priority int) {
 		return
 	}
 	if err := n.publish(title, message, priority); err != nil {
-		slog.Warn("could not publish notification", "error", err)
+		log.Warn().Err(err).Msg("could not publish the ntfy notification, so this failure is only in the log")
 	}
 }
 

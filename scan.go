@@ -2,7 +2,6 @@ package main
 
 import (
 	"io/fs"
-	"log/slog"
 	"path/filepath"
 	"strings"
 )
@@ -19,7 +18,7 @@ import (
 func scan(root string, fn func(path string)) {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			slog.Warn("skipping unreadable path", "path", path, "error", err)
+			log.Warn().Err(err).Msgf("cannot read %s, so it is being skipped", path)
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -41,6 +40,6 @@ func scan(root string, fn func(path string)) {
 		return nil
 	})
 	if err != nil {
-		slog.Error("walking the watch directory", "dir", root, "error", err)
+		log.Error().Err(err).Msgf("could not finish walking %s, so this scan may have missed files", root)
 	}
 }

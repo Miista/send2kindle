@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/smtp"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 const watchDir = "/watch"
@@ -107,6 +108,11 @@ func parseInterval(raw string) (time.Duration, error) {
 // sendFile is a variable so tests can substitute a fake: the decision of
 // WHICH files to send is the interesting logic, and pinning it down should
 // not require an SMTP server.
+// log is the process-wide logger, assigned once in main before anything uses
+// it. A package-level var rather than a threaded parameter because every
+// function here is about one file and would otherwise carry it unused.
+var log zerolog.Logger
+
 var sendFile = send
 
 // Formats Amazon's Send-to-Kindle email service accepts directly, converting
@@ -156,42 +162,41 @@ func accepted(mode Mode, ext string) bool {
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	log = newLogger(os.Getenv("LOG_LEVEL"))
 
 	required := []string{"SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "KINDLE_EMAIL", "FROM_EMAIL"}
 	for _, k := range required {
 		if os.Getenv(k) == "" {
-			slog.Error("missing required env var", "var", k)
+			log.Error().Msgf("%s is not set, and it is required to send anything", k)
 			os.Exit(1)
 		}
 	}
 
 	m, err := parseMode(os.Getenv("WATCH_MODE"))
 	if err != nil {
-		slog.Error("invalid configuration", "error", err)
+		log.Error().Err(err).Msg("WATCH_MODE is not one of drop or library")
 		os.Exit(1)
 	}
 	mode = m
 	if mode == ModeLibrary {
 		state = LoadState(statePath)
-		slog.Info("library mode: files are left in place, outcomes recorded",
-			"state", statePath, "known", len(state.Entries))
+		log.Info().
+			Str("state", statePath).
+			Msgf("library mode: files stay where they are, and %d are already accounted for", len(state.Entries))
 	}
 
 	notifier = notifierFromEnv()
 	if notifier.Configured() {
-		slog.Info("notifications enabled", "topic", notifier.Topic)
+		log.Info().Msgf("failures will be published to ntfy topic %s", notifier.Topic)
 	}
 
 	interval, err := parseInterval(os.Getenv("SCAN_INTERVAL"))
 	if err != nil {
-		slog.Error("invalid configuration", "error", err)
+		log.Error().Err(err).Msg("SCAN_INTERVAL is not a duration")
 		os.Exit(1)
 	}
 
-	slog.Info("watching for new ebooks", "dir", watchDir,
-		"mode", string(mode), "interval", interval.String())
+	log.Info().Msgf("watching %s in %s mode, scanning every %s", watchDir, mode, interval)
 
 	// Docker stops a container by sending SIGTERM and waiting. Without this
 	// the process is killed instead, and anything that runs on the way out
@@ -216,7 +221,7 @@ func main() {
 	for {
 		select {
 		case sig := <-stopping:
-			slog.Info("shutting down", "signal", sig.String())
+			log.Info().Msgf("got %s, finishing the current file and stopping", sig)
 			return
 		case <-ticker.C:
 			sweep()
@@ -256,7 +261,7 @@ func handle(path string, m Mode, st *State) {
 	var key string
 	if m == ModeLibrary {
 		if key, err = fileKey(info); err != nil {
-			slog.Error("cannot identify file, skipping", "path", path, "error", err)
+			log.Error().Err(err).Msgf("cannot identify %s, so it is being skipped rather than risk sending it twice", path)
 			return
 		}
 		if st.Done(key) {
@@ -270,7 +275,7 @@ func handle(path string, m Mode, st *State) {
 			return
 		}
 		if err := st.Record(key, outcome, name, info.Size()); err != nil {
-			slog.Error("failed to record outcome", "path", path, "outcome", outcome, "error", err)
+			log.Error().Err(err).Msgf("could not record %s as %s, so it may be handled again on the next scan", path, outcome)
 		}
 	}
 
@@ -283,7 +288,7 @@ func handle(path string, m Mode, st *State) {
 			// Worth a notification because it DESTROYS the file: a book in a
 			// format Amazon will not take was still a book, and the only
 			// record that it existed is this message.
-			slog.Info("discarding file Amazon's Send-to-Kindle email won't accept", "path", path, "ext", ext)
+			log.Warn().Msgf("deleting %s: Amazon's Send-to-Kindle email does not accept %s files", path, ext)
 			os.Remove(path)
 			notifier.Notify("Discarded "+name,
 				fmt.Sprintf("%s was deleted: Amazon's Send-to-Kindle email does not accept %s files.", name, ext),
@@ -296,15 +301,15 @@ func handle(path string, m Mode, st *State) {
 			// .txt and .jpg happily, and it is THIS mode declining them. The
 			// blamed party has to be the one that made the decision, or the
 			// next person to read this log debugs the wrong system.
-			slog.Info("skipping file: library mode sends .epub only", "path", path, "ext", ext)
+			log.Info().Msgf("leaving %s alone: library mode sends .epub only, not %s", path, ext)
 		}
 		finish(OutcomeUnusable)
 		return
 	}
 
 	if info.Size() > maxSourceBytes {
-		slog.Error("file too large for Gmail SMTP, leaving in place — needs manual handling",
-			"path", path, "size_bytes", info.Size(), "limit_bytes", maxSourceBytes)
+		log.Error().Msgf("%s is %s, over the %s Gmail SMTP will accept — left in place, needs sending by hand",
+			name, megabytes(info.Size()), megabytes(maxSourceBytes))
 		notifier.Notify("Too large: "+name,
 			fmt.Sprintf("%s is %s, over the %s limit. It needs a different delivery method — USB, or a smaller edition.",
 				name, megabytes(info.Size()), megabytes(maxSourceBytes)),
@@ -318,7 +323,7 @@ func handle(path string, m Mode, st *State) {
 		// was briefly unreachable, and that is worth retrying. The cost of
 		// being wrong is a duplicate on the Kindle; the cost of recording it
 		// would be a book that never arrives and never says so.
-		slog.Error("send failed, leaving file in place for manual retry", "path", path, "error", err)
+		log.Error().Err(err).Msgf("could not send %s, so it has been left in place to retry by hand", path)
 		// Default priority, not high: this is retried on the next scan, so
 		// most of these resolve themselves and a high-priority alert for a
 		// transient SMTP blip would train you to ignore the channel.
@@ -328,7 +333,7 @@ func handle(path string, m Mode, st *State) {
 		return
 	}
 
-	slog.Info("sent to kindle", "title", name)
+	log.Info().Msgf("sent %s to the kindle", name)
 	finish(OutcomeSent)
 
 	// Drop mode consumes what it sends; library mode has the state file
@@ -336,7 +341,7 @@ func handle(path string, m Mode, st *State) {
 	// would be destroying the thing the shelf is for.
 	if m == ModeDrop {
 		if err := os.Remove(path); err != nil {
-			slog.Error("failed to remove source file after send", "path", path, "error", err)
+			log.Error().Err(err).Msgf("sent %s but could not delete it, so it may be sent again", path)
 		}
 	}
 }
