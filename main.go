@@ -112,6 +112,9 @@ var sendFile = send
 // Formats Amazon's Send-to-Kindle email service accepts directly, converting
 // server-side. Amazon dropped native mobi/azw3 support for email delivery
 // around 2022 — anything else lands here unconvertible and gets discarded.
+//
+// Used in DROP mode, where a file was put there deliberately: if you drop a
+// .txt or a .jpg in, you meant to send it.
 var kindleAcceptedExt = map[string]bool{
 	".epub": true,
 	".pdf":  true,
@@ -126,6 +129,30 @@ var kindleAcceptedExt = map[string]bool{
 	".jpg":  true,
 	".jpeg": true,
 	".bmp":  true,
+}
+
+// What LIBRARY mode sends: .epub, and nothing else.
+//
+// A library is not a queue of things you chose to send. It is full of files
+// that came with the book -- scene release notes, cover art, an "upload your
+// own" advert -- and Amazon accepts .txt and .jpg perfectly happily, so the
+// drop-mode list mails all of them to the device.
+//
+// Not hypothetical: switching a real library to this mode emailed two scene
+// notes to a Kindle alongside the books, because .txt is on Amazon's list.
+//
+// We do not convert, so .epub is the format a library actually holds books in.
+// Anything else is recorded as unsupported_format and left alone on disk.
+var libraryAcceptedExt = map[string]bool{
+	".epub": true,
+}
+
+// accepted reports whether this file should be sent in the given mode.
+func accepted(mode Mode, ext string) bool {
+	if mode == ModeLibrary {
+		return libraryAcceptedExt[ext]
+	}
+	return kindleAcceptedExt[ext]
 }
 
 func main() {
@@ -248,7 +275,7 @@ func handle(path string, m Mode, st *State) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))
-	if !kindleAcceptedExt[ext] {
+	if !accepted(m, ext) {
 		// Discarded in drop mode: the file was a copy made to be consumed.
 		// NEVER in library mode -- the shelf is not ours to delete from, and a
 		// format Amazon will not take is still a book someone owns.

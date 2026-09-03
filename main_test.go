@@ -332,3 +332,49 @@ func TestDropModeIgnoresTheState(t *testing.T) {
 		t.Error("drop mode skipped a file because of a state entry")
 	}
 }
+
+// A library is not a queue of things you chose to send: it is full of files
+// that came with the book. Amazon accepts .txt and .jpg happily, so the
+// drop-mode list mails scene notes and cover art to the device alongside the
+// books.
+//
+// Not hypothetical -- switching a real library to this mode did exactly that.
+func TestLibraryModeSendsOnlyBooks(t *testing.T) {
+	for _, ext := range []string{".txt", ".jpg", ".png", ".html", ".docx", ".pdf"} {
+		sent := withFakeSend(t, nil)
+		path := writeFile(t, t.TempDir(), "release-notes"+ext, 512)
+
+		handle(path, ModeLibrary, newState(t))
+
+		if len(*sent) != 0 {
+			t.Errorf("library mode sent a %s: %v", ext, *sent)
+		}
+	}
+}
+
+// The counterpart: it must still send the one format a library holds.
+func TestLibraryModeSendsEpub(t *testing.T) {
+	sent := withFakeSend(t, nil)
+	path := writeFile(t, t.TempDir(), "book.epub", 1024)
+
+	handle(path, ModeLibrary, newState(t))
+
+	if len(*sent) != 1 {
+		t.Errorf("library mode did not send an .epub: %v", *sent)
+	}
+}
+
+// Drop mode is unchanged: a file put there deliberately is one you meant to
+// send, whatever its extension.
+func TestDropModeStillSendsAnythingAmazonAccepts(t *testing.T) {
+	for _, ext := range []string{".txt", ".pdf"} {
+		sent := withFakeSend(t, nil)
+		path := writeFile(t, t.TempDir(), "note"+ext, 512)
+
+		handle(path, ModeDrop, newState(t))
+
+		if len(*sent) != 1 {
+			t.Errorf("drop mode stopped sending a %s: %v", ext, *sent)
+		}
+	}
+}
